@@ -1,140 +1,144 @@
-const axios = require('axios')
-const crypto = require('crypto')
+const rp = require('request-promise');
+const crypto = require('crypto');
 const xml2js = require('xml2js');
+const utils = require('./utils');
 
-const config = {
-    appId: 'appId', //APPId
-    mch_id: 'mchId', //商户号
-    mch_secret: "mch_secret", //商户secret
-    callback: 'localhost:8080', //付款结果的回调地址
-    trade_type: 'JSAPI' //小程序取值如下：JSAPI
-}
-
-const createNonceStr = () => {
-    return Math.random().toString(36).substr(2, 15);
-};
-
-const createTimeStamp = () => {
-    return parseInt(new Date().getTime() / 1000) + '';
-};
-
-const createOutTradeNo = () => {
-    let now = new Date();
-    let date_time = now.getFullYear() + '' + (now.getMonth() + 1) + '' + now.getDate(); //年月日
-    let date_no = (now.getTime() + '').substr(-8); //生成8位为日期数据，精确到毫秒
-    let random_no = Math.floor(Math.random() * 99);
-    if (random_no < 10) { //生成位数为2的随机码
-        random_no = '0' + random_no;
+/**
+ * 
+ * @param {*} config 
+ * @param {string} config.mch_id  商户号Id
+ * @param {string} config.mch_appid appId
+ * @param {string} config.mch_secret 商户号secret
+ * @param {string} config.notifyUrl 结果回传接受地址
+ * @param {string} config.keyPath 商户号key的path
+ * @param {string} config.certPath 商户号cert的path
+ */
+class  WxPay {
+  constructor(config) {
+    /**
+     * 批量设置options
+     * @param {object} obj
+     */
+    this._setOpt = (obj) => {
+      Object.assign(this.options, obj);
     }
-    let out_trade_no = config.mch_id + date_time + date_no + random_no; //商户订单号，需保持唯一性
-    return out_trade_no
-};
-
-const createSign = (obj) => {
-    let str = urlUnite(objSort(obj))
-    let stringSignTemp = str + '&key=' + config.mch_secret
-    let signStr = crypto.createHash('md5').update(stringSignTemp).digest('hex').toUpperCase()
-    return signStr
-};
-
-const fnCreateXml = function (obj) {
-    let _xml = '';
-    for (let key in obj) {
-        _xml += '<' + key + '>' + obj[key] + '</' + key + '>';
+    /**检查config */
+    this._checkConfig = () => {
+      let { mch_id, mch_appid, mch_secret, notifyUrl, keyPath, certPath } = this.config;
+      if (!mch_id || mch_id.toString().length === 0) throw new Error('config错误，缺少 mch_id');
+      if (!mch_appid || mch_appid.toString().length === 0) throw new Error('config错误，缺少 mch_appid');
+      if (!mch_secret || mch_secret.toString().length === 0) throw new Error('config错误，缺少 mch_secret');
+      if (!notifyUrl || notifyUrl.length === 0) throw new Error('config错误，缺少 notifyUrl');
+      if (!keyPath || keyPath.length === 0) throw new Error('config错误，缺少 keyPath');
+      if (!certPath || certPath.length === 0) throw new Error('config错误，缺少 certPath');
     }
-    return _xml;
-};
-const urlUnite = function (o, p, ec) {
-    var url = []
-    if (typeof o == 'object') {
-        for (var i in o) {
-            var key = i
-            if (p) key = p + '[' + i + ']'
-            if (typeof o[i] == 'object') {
-                url.push(urlUnite(o[i], key))
-            } else {
-                url.push(key + '=' + o[i])
-            }
-        }
+    /**检查options */
+    this._checkOptions = () => {
+      let {openId, amount, productDesc, clientIp} = this.options;
+      if (!openId || openId.length === 0) throw new Error('options错误，缺少 openId');
+      if (!amount || amount === 0) throw new Error('options错误，缺少 amount');
+      if (!productDesc || productDesc.length === 0) throw new Error('options错误，缺少 productDesc');
+      if (!clientIp || clientIp.length === 0) throw new Error('options错误，缺少 clientIp');
     }
-    return url.join('&')
-}
-const objSort = (obj, desc) => {
-    var sdic = Object.keys(obj).sort()
-    var o = {}
-    for (ki in sdic) {
-        o[sdic[ki]] = obj[sdic[ki]]
+    this._initXmlToSend = () => {
+      this._checkConfig();
+      this._checkOptions();
+      // 构造
+      let obj = {
+        appid: this.config.mch_appid,
+        mch_id: this.config.mch_id 
+      }
+      obj.nonce_str = utils.noncestr(16),
+      obj.out_trade_no = this.config.mch_id + utils.timestampWithRandomNumber();
+      obj.device_info = 'miniapp';
+      obj.body = this.options.productDesc;
+      obj.total_fee = this.options.amount;
+      obj.spbill_create_ip = this.options.clientIp;
+      obj.notify_url = this.config.notifyUrl;
+      obj.trade_type = 'JSAPI';
+      obj.openid = this.options.openid;
+      // 签名
+      let strToSign = utils.jsonToQueryString(obj);
+      strToSign += '&key=' + this.config.mch_secret;
+      let signedStr = utils.encryptMd5(strToSign);
+      obj.sign = signedStr;
+
+      let xml = utils.jsonToXml(obj)
+      return [obj, xml];
     }
-    return obj = o
-}
-
-const signAgain = (obj)=>{
-    let str = urlUnite(objSort(obj))
-    let stringSignTemp = str + '&key=' + config.mch_secret
-    let signStr = crypto.createHash('md5').update(stringSignTemp).digest('hex').toUpperCase()
-    return signStr
-
-}
-
-const initSendData = (productDesc, amount, Aip, openId, deviceInfo='miniapp') => {
-    let obj = {
-        appid: config.appId,
-        mch_id: config.mch_id,
-    }
-    let nonce_str = createNonceStr();
-    obj.nonce_str = nonce_str;
-
-    let out_trade_no = createOutTradeNo()
-    obj.out_trade_no = out_trade_no
-
-    obj.device_info = deviceInfo, //设备类型
-    obj.body = productDesc, //商品名称
-    obj.total_fee = amount / 100 //金额，单位：分
-    obj.spbill_create_ip = Aip //用户IP
-    obj.notify_url = config.callback//付款结果的回调地址
-    obj.trade_type = config.trade_type //小程序取值如下：JSAPI
-    obj.openid = openId //用户openId
-
-    obj.sign = createSign(obj)
-
-    let xmlData = fnCreateXml(obj);
-    let sendData = '<xml>' + xmlData + '</xml>';
-    return {obj,sendData};
-};
-
-const main = async (productDesc, amount, Aip, openId, successCallBack=(res)=>{}) =>{
-    let url = 'https://api.mch.weixin.qq.com/pay/unifiedorder'
-    let {obj,sendData} = initSendData(productDesc, amount, Aip, openId)
-    let r = await axios.post(url,{
-        data:sendData
+    this.config = Object.assign({}, config); // 配置，实例化一次之后基本不变的参数
+    this.options = {}; // 选项，实时传进来的参数
+    this._checkConfig();
+  }
+  /**
+   * 批量设置config
+   * @param {object} obj
+   */
+  setConf(obj) {
+    Object.assign(this.config, obj);
+  }
+  /**
+   * 设置config
+   * @param {string} k key
+   * @param {*} v value
+   */
+  setConfKV(k, v) {
+    this.config[k] = v;
+  }
+  /**
+   * 获取config
+   * @param {string} k key
+   */
+  getConf(k) {
+    return k ? this.config[k] : this.config;
+  }
+  /**
+  * 支付
+  * @param {*} options 
+  * @param {string} options.openId
+  * @param {number} amount
+  * @param {string} productDesc
+  * @param {number} clientIp
+  */
+  async pay(options, callback) {
+    this._setOpt(options);
+    let [obj, xml] = this._initXmlToSend();
+    let res = await rp({
+      method: 'POST',
+      uri: 'https://api.mch.weixin.qq.com/pay/unifiedorder',
+      headers: {
+        'Content-Type': 'text/xml',
+        'Content-Length': Buffer.byteLength(xml)
+      },
+      body: xml,
+      key: fs.readFileSync(this.config.keyPath), //将微信生成的证书放入 config目录下
+      cert: fs.readFileSync(this.config.certPath),
+      json: false
+    });
+    const parser = new xml2js.Parser({ trim: true, explicitArray: false, explicitRoot: false });
+    res = new Promise(resolve => {
+      parser.parseString(res, function (err, result) {
+        resolve(result);
+      });
     })
-    let parser = new xml2js.Parser({trim: true, explicitArray: false, explicitRoot: false});//解析签名结果xml转json
-    let res = await new Promise((resolve,reject)=>{
-        parser.parseString(r.data, function (err, result) {
-            resolve(result)
-        });
-    })
-   if(res.return_code !== 'SUCCESS'){
-       //错误处理
-       console.log(res)
-   }
-   console.log(res)
-   //生成预订单成功，存入表
-   successCallBack(obj)
-   
-   let objToSign = {
-        appId: res.appid,
-        timeStamp: createTimeStamp(),
-        nonceStr: res.nonce_str,
-        package: 'prepay_id=' + res.prepay_id,
-        signType:'MD5'
-   }
-   let paySign = signAgain(objToSign)
-
-   let json = Object.assign(objToSign,{paySign:paySign})
-   console.log(json)
-   return json
+    if(res.return_code !== 'SUCCESS'){
+      //错误处理
+      console.log(res)
+    }
+    callback(obj) // 回调(存库之类的操作)
+    let objToSign = {
+      appId: res.appid,
+      timeStamp: new Date().getTime() / 1000,
+      nonceStr: res.nonce_str,
+      package: 'prepay_id=' + res.prepay_id,
+      signType:'MD5'
+    }
+    let strToSign = utils.jsonToQueryString(objToSign);
+    strToSign += '&key=' + this.config.mch_secret;
+    let signedStr = utils.encryptMd5(strToSign);
+    objToSign.paySign = signedStr;
+    return objToSign;
+  }
 }
-main('测试测试测试测试',100,'192.168.1.1','openId')
 
-module.exports = main
+module.exports = WxPay;
